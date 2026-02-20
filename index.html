@@ -3,24 +3,31 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CSV → SQL Liste</title>
+  <title>Artikel → SQL Liste</title>
   <style>
     :root{ --bg:#0b0f14; --txt:#e9eef6; --muted:#9fb0c7; --line:#223246; --acc:#40c9ff; }
     *{box-sizing:border-box}
-    body{margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-         font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--txt)}
-    .box{width:min(720px,92vw); display:grid; gap:12px}
+    body{
+      margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--txt)
+    }
+    .box{width:min(980px,92vw); display:grid; gap:12px}
+    .top{display:grid; gap:12px; grid-template-columns: 1fr 1fr}
+    @media (max-width: 860px){ .top{grid-template-columns: 1fr} }
+
     .drop{
-      border:2px dashed var(--line); border-radius:14px; padding:26px; text-align:center; cursor:pointer;
-      transition:.15s ease; user-select:none;
+      border:2px dashed var(--line); border-radius:14px; padding:22px; text-align:center; cursor:pointer;
+      transition:.15s ease; user-select:none; min-height:130px; display:flex; flex-direction:column; justify-content:center;
     }
     .drop.drag{border-color:var(--acc); background:rgba(64,201,255,.07)}
     .drop .muted{color:var(--muted); font-size:13px; margin-top:6px}
     textarea{
-      width:100%; min-height:120px; resize:vertical; border-radius:14px; padding:14px;
+      width:100%; min-height:130px; resize:vertical; border-radius:14px; padding:14px;
       border:1px solid var(--line); background:#0a0f16; color:var(--txt);
       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; line-height:1.45;
     }
+    .out{min-height:120px}
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
     button{
       border-radius:14px; padding:12px 14px; border:1px solid rgba(64,201,255,.6);
       background:rgba(64,201,255,.08); color:var(--txt); cursor:pointer;
@@ -31,24 +38,50 @@
 </head>
 <body>
   <div class="box">
-    <div id="drop" class="drop" tabindex="0" role="button" aria-label="CSV hier einfuegen">
-      <div><b>Hier per Drag&Drop die Datei einfügen</b></div>
-      <div class="muted">oder klicken & hochladen</div>
-      <input id="file" type="file" accept=".csv,text/csv" />
+    <div class="top">
+      <!-- LINKS: CSV -->
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="CSV hier einfügen">
+        <div><b>CSV hier einfuegen</b></div>
+        <div class="muted">Drag & Drop oder klicken</div>
+        <input id="file" type="file" accept=".csv,text/csv" />
+      </div>
+
+      <!-- RECHTS: Manuelle Artikelnr. -->
+      <textarea id="manual" placeholder="Artikelnummern hier einfügen (eine pro Zeile)&#10;111111&#10;222222&#10;251546"></textarea>
     </div>
 
-    <textarea id="out" readonly placeholder="('107454','156444','105781')"></textarea>
-    <button id="copy" type="button">KOPIEREN</button>
+    <!-- OUTPUT -->
+    <textarea id="out" class="out" readonly placeholder="('111111','222222','251546')"></textarea>
+
+    <div class="row">
+      <button id="copy" type="button">Kopieren</button>
+      <button id="clear" type="button" style="border-color:var(--line); background:transparent;">Leeren</button>
+    </div>
   </div>
 
 <script>
   const drop = document.getElementById('drop');
   const fileInput = document.getElementById('file');
+  const manual = document.getElementById('manual');
   const out = document.getElementById('out');
   const copyBtn = document.getElementById('copy');
+  const clearBtn = document.getElementById('clear');
+
+  let lastCsvText = ""; // falls CSV geladen wurde
 
   function prevent(e){ e.preventDefault(); e.stopPropagation(); }
 
+  function uniqueSorted(arr){
+    const set = new Set(arr.filter(Boolean));
+    return Array.from(set).sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
+  }
+
+  function toSqlList(arr){
+    const clean = uniqueSorted(arr);
+    return "('" + clean.join("','") + "')";
+  }
+
+  // ---------------- CSV Parser (Quotes + ;/, auto) ----------------
   function countDelimsOutsideQuotes(line){
     let inQ=false, semi=0, comma=0;
     for(let i=0;i<line.length;i++){
@@ -86,11 +119,9 @@
         if(inQ && text[i+1] === '"'){ field += '"'; i++; continue; }
         inQ = !inQ; continue;
       }
-
       if(!inQ && ch === delim){
         row.push(field); field=''; continue;
       }
-
       if(!inQ && (ch === '\n' || ch === '\r')){
         if(ch === '\r' && text[i+1] === '\n') i++;
         row.push(field); field='';
@@ -98,7 +129,6 @@
         row = [];
         continue;
       }
-
       field += ch;
     }
 
@@ -107,28 +137,52 @@
     return rows;
   }
 
-  function buildListFromCSV(text){
+  function extractFromCsv(text){
     const delim = detectDelimiter(text);
     const rows = parseCSV(text, delim);
-    if(rows.length < 2) return "('')";
+    if(rows.length < 2) return [];
 
     const data = rows.slice(1); // Header weg
-    const set = new Set();
+    const items = [];
 
     for(const r of data){
       const status = (r[0] ?? '').trim(); // Spalte A
       const item   = (r[1] ?? '').trim(); // Spalte B
-      if(status === 'Reaktiviert' && item) set.add(item);
+      if(status === 'Reaktiviert' && item) items.push(item);
     }
-
-    const arr = Array.from(set).sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
-    return "('" + arr.join("','") + "')";
+    return items;
   }
 
+  // ---------------- Manuell (eine Nummer pro Zeile) ----------------
+  function extractFromManual(text){
+    return text
+      .split(/\r?\n/)
+      .map(x => (x || '').trim())
+      .filter(x => x !== '');
+  }
+
+  // ---------------- Ergebnis aktualisieren ----------------
+  function refresh(){
+    const manualItems = extractFromManual(manual.value);
+
+    if(manualItems.length > 0){
+      out.value = toSqlList(manualItems);
+      return;
+    }
+
+    if(lastCsvText){
+      out.value = toSqlList(extractFromCsv(lastCsvText));
+      return;
+    }
+
+    out.value = "";
+  }
+
+  // ---------------- File Handling ----------------
   async function handleFile(file){
     if(!file) return;
-    const text = await file.text();
-    out.value = buildListFromCSV(text);
+    lastCsvText = await file.text();
+    refresh();
   }
 
   drop.addEventListener('click', ()=> fileInput.click());
@@ -152,15 +206,29 @@
     fileInput.value = '';
   });
 
+  // ---------------- Buttons ----------------
   copyBtn.addEventListener('click', async ()=>{
-    const val = out.value.trim();
+    const val = (out.value || '').trim();
     if(!val) return;
+
+    const old = copyBtn.textContent;
     try{
       await navigator.clipboard.writeText(val);
     }catch{
       out.focus(); out.select(); document.execCommand('copy');
     }
+    copyBtn.textContent = "Kopiert ✅";
+    setTimeout(()=> copyBtn.textContent = old, 900);
   });
+
+  clearBtn.addEventListener('click', ()=>{
+    manual.value = "";
+    lastCsvText = "";
+    out.value = "";
+  });
+
+  // Live-Update wenn manuell getippt/gepastet wird
+  manual.addEventListener('input', refresh);
 </script>
 </body>
 </html>
