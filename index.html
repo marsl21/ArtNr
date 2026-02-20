@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSV → SQL Liste</title>
+  <style>
+    :root{ --bg:#0b0f14; --txt:#e9eef6; --muted:#9fb0c7; --line:#223246; --acc:#40c9ff; }
+    *{box-sizing:border-box}
+    body{margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--txt)}
+    .box{width:min(720px,92vw); display:grid; gap:12px}
+    .drop{
+      border:2px dashed var(--line); border-radius:14px; padding:26px; text-align:center; cursor:pointer;
+      transition:.15s ease; user-select:none;
+    }
+    .drop.drag{border-color:var(--acc); background:rgba(64,201,255,.07)}
+    .drop .muted{color:var(--muted); font-size:13px; margin-top:6px}
+    textarea{
+      width:100%; min-height:120px; resize:vertical; border-radius:14px; padding:14px;
+      border:1px solid var(--line); background:#0a0f16; color:var(--txt);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; line-height:1.45;
+    }
+    button{
+      border-radius:14px; padding:12px 14px; border:1px solid rgba(64,201,255,.6);
+      background:rgba(64,201,255,.08); color:var(--txt); cursor:pointer;
+    }
+    button:active{transform:translateY(1px)}
+    input[type="file"]{display:none}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="CSV hier einfuegen">
+      <div><b>Hier per Drag&Drop die Datei einfügen</b></div>
+      <div class="muted">oder klicken & hochladen</div>
+      <input id="file" type="file" accept=".csv,text/csv" />
+    </div>
+
+    <textarea id="out" readonly placeholder="('107454','156444','105781')"></textarea>
+    <button id="copy" type="button">KOPIEREN</button>
+  </div>
+
+<script>
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('file');
+  const out = document.getElementById('out');
+  const copyBtn = document.getElementById('copy');
+
+  function prevent(e){ e.preventDefault(); e.stopPropagation(); }
+
+  function countDelimsOutsideQuotes(line){
+    let inQ=false, semi=0, comma=0;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch === '"'){
+        if(inQ && line[i+1] === '"'){ i++; continue; }
+        inQ = !inQ; continue;
+      }
+      if(!inQ){
+        if(ch === ';') semi++;
+        else if(ch === ',') comma++;
+      }
+    }
+    return {semi, comma};
+  }
+
+  function detectDelimiter(text){
+    const lines = text.split(/\r?\n/).slice(0, 25);
+    let semi=0, comma=0;
+    for(const line of lines){
+      const c = countDelimsOutsideQuotes(line);
+      semi += c.semi; comma += c.comma;
+    }
+    return (semi >= comma) ? ';' : ',';
+  }
+
+  function parseCSV(text, delim){
+    const rows = [];
+    let row = [], field = '', inQ = false;
+
+    for(let i=0; i<text.length; i++){
+      const ch = text[i];
+
+      if(ch === '"'){
+        if(inQ && text[i+1] === '"'){ field += '"'; i++; continue; }
+        inQ = !inQ; continue;
+      }
+
+      if(!inQ && ch === delim){
+        row.push(field); field=''; continue;
+      }
+
+      if(!inQ && (ch === '\n' || ch === '\r')){
+        if(ch === '\r' && text[i+1] === '\n') i++;
+        row.push(field); field='';
+        if(row.length > 1 || (row.length === 1 && row[0].trim() !== '')) rows.push(row);
+        row = [];
+        continue;
+      }
+
+      field += ch;
+    }
+
+    row.push(field);
+    if(row.length > 1 || (row.length === 1 && row[0].trim() !== '')) rows.push(row);
+    return rows;
+  }
+
+  function buildListFromCSV(text){
+    const delim = detectDelimiter(text);
+    const rows = parseCSV(text, delim);
+    if(rows.length < 2) return "('')";
+
+    const data = rows.slice(1); // Header weg
+    const set = new Set();
+
+    for(const r of data){
+      const status = (r[0] ?? '').trim(); // Spalte A
+      const item   = (r[1] ?? '').trim(); // Spalte B
+      if(status === 'Reaktiviert' && item) set.add(item);
+    }
+
+    const arr = Array.from(set).sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
+    return "('" + arr.join("','") + "')";
+  }
+
+  async function handleFile(file){
+    if(!file) return;
+    const text = await file.text();
+    out.value = buildListFromCSV(text);
+  }
+
+  drop.addEventListener('click', ()=> fileInput.click());
+  drop.addEventListener('keydown', (e)=>{ if(e.key === 'Enter' || e.key === ' ') fileInput.click(); });
+
+  ['dragenter','dragover'].forEach(evt=>{
+    drop.addEventListener(evt, (e)=>{ prevent(e); drop.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(evt=>{
+    drop.addEventListener(evt, (e)=>{ prevent(e); drop.classList.remove('drag'); });
+  });
+
+  drop.addEventListener('drop', (e)=>{
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(f);
+  });
+
+  fileInput.addEventListener('change', (e)=>{
+    const f = e.target.files && e.target.files[0];
+    handleFile(f);
+    fileInput.value = '';
+  });
+
+  copyBtn.addEventListener('click', async ()=>{
+    const val = out.value.trim();
+    if(!val) return;
+    try{
+      await navigator.clipboard.writeText(val);
+    }catch{
+      out.focus(); out.select(); document.execCommand('copy');
+    }
+  });
+</script>
+</body>
+</html>
